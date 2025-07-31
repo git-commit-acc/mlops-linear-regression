@@ -40,6 +40,9 @@ def symmetric_quantize_int16(arr):
 def symmetric_dequantize_int16(quantized, scale):
     return quantized.astype(np.float32) * scale
 
+def get_size_in_kb(filepath):
+    size_bytes = os.path.getsize(filepath)
+    return round(size_bytes / 1024, 4)
 
 def main():
     model = joblib.load("src/trained_model.joblib")
@@ -77,6 +80,11 @@ def main():
         'int_scale': int_scale_int16,
     }, "src/quant_params_int16.joblib")
 
+    # Paths to the saved models
+    original_model = "src/trained_model.joblib"
+    int8_model = "src/quant_params_int8.joblib"
+    int16_model = "src/quant_params_int16.joblib"
+
     # Dequantize
     dq_coef_int8 = symmetric_dequantize_int8(q_coef_int8, coef_scale_int8)
     dq_intercept_int8 = symmetric_dequantize_int8(q_intercept_int8, int_scale_int8).item()
@@ -103,9 +111,9 @@ def main():
 
     print(f"\n" + "="*50)
     print(f"RESULTS:")
-    print(f"Original Model R2: {orig_r2:.4f}, MSE: {orig_mse:.4f}")
-    print(f"Quantized Model 8 bit R2: {r2_int8:.4f}, MSE: {mse_int8:.4f}")
-    print(f"Quantized Model 16 bit R2: {r2_int16:.4f}, MSE: {mse_int16:.4f}")
+    print(f"Original Model R2: {orig_r2:.4f}, MSE: {orig_mse:.4f}, Size:  {get_size_in_kb(original_model)} KB")
+    print(f"Quantized Model 8 bit R2: {r2_int8:.4f}, MSE: {mse_int8:.4f}, Size:  {get_size_in_kb(int8_model)} KB")
+    print(f"Quantized Model 16 bit R2: {r2_int16:.4f}, MSE: {mse_int16:.4f}, Size:  {get_size_in_kb(int16_model)} KB")
     print(f"\n" + "="*50)
 
 if __name__ == "__main__":
