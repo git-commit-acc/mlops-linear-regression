@@ -4,25 +4,42 @@ import sys, os
 sys.path.append(os.path.dirname(__file__))
 from utils import load_data
 from sklearn.metrics import r2_score, mean_squared_error
+import warnings
+from sklearn.exceptions import InconsistentVersionWarning
+warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
-def min_max_quantize(arr):
-    arr_min, arr_max = arr.min(), arr.max()
-    
-    if arr_max == arr_min:
-        quantized = np.full(arr.shape, 127, dtype=np.uint8)
-        return quantized, arr_min, arr_max
-    
-    # Normal quantization
-    quantized = ((arr - arr_min) / (arr_max - arr_min) * 255).round().astype(np.uint8)
-    return quantized, arr_min, arr_max
+def symmetric_quantize_int8(arr):
+    qmin, qmax = -128, 127
 
-def dequantize(quantized, arr_min, arr_max):
+    max_abs = np.max(np.abs(arr))
+    if max_abs == 0:
+        scale = 1.0
+        quantized = np.zeros_like(arr, dtype=np.int8)
+    else:
+        scale = max_abs / qmax
+        quantized = np.clip(np.round(arr / scale), qmin, qmax).astype(np.int8)
 
-    if arr_max == arr_min:
-        return np.full(quantized.shape, arr_min, dtype=np.float32)
-    
-    # Normal dequantization
-    return quantized.astype(np.float32) / 255 * (arr_max - arr_min) + arr_min
+    return quantized, scale
+
+def symmetric_dequantize_int8(quantized, scale):
+    return quantized.astype(np.float32) * scale
+
+def symmetric_quantize_int16(arr):
+    qmin, qmax = -32768, 32767
+
+    max_abs = np.max(np.abs(arr))
+    if max_abs == 0:
+        scale = 1.0
+        quantized = np.zeros_like(arr, dtype=np.int16)
+    else:
+        scale = max_abs / qmax
+        quantized = np.clip(np.round(arr / scale), qmin, qmax).astype(np.int16)
+
+    return quantized, scale
+
+def symmetric_dequantize_int16(quantized, scale):
+    return quantized.astype(np.float32) * scale
+
 
 def main():
     model = joblib.load("src/trained_model.joblib")
@@ -31,34 +48,64 @@ def main():
 
     joblib.dump({'coef_': coef, 'intercept_': intercept}, "src/unquant_params.joblib")
 
-    # Calculate original model performance
     X_train, X_test, y_train, y_test = load_data()
+
+    # Evaluate original model
     orig_preds = np.dot(X_test, coef) + intercept[0]
     orig_r2 = r2_score(y_test, orig_preds)
     orig_mse = mean_squared_error(y_test, orig_preds)
 
-    # Quantize weights
-    q_coef, coef_min, coef_max = min_max_quantize(coef)
-    q_intercept, int_min, int_max = min_max_quantize(intercept)
-    joblib.dump({
-        'q_coef': q_coef,
-        'coef_min': coef_min,
-        'coef_max': coef_max,
-        'q_intercept': q_intercept,
-        'int_min': int_min,
-        'int_max': int_max,
-    }, "src/quant_params.joblib")
+    # Quantize model int8 parameters symmetrically
+    q_coef_int8, coef_scale_int8 = symmetric_quantize_int8(coef)
+    q_intercept_int8, int_scale_int8 = symmetric_quantize_int8(intercept)
 
-    dq_coef = dequantize(q_coef, coef_min, coef_max)
-    dq_intercept = dequantize(q_intercept, int_min, int_max)[0]
-    preds = np.dot(X_test, dq_coef) + dq_intercept
-    r2 = r2_score(y_test, preds)
-    mse = mean_squared_error(y_test, preds)
-    
+    # Quantize model int16 parameters symmetrically
+    q_coef_int16, coef_scale_int16 = symmetric_quantize_int16(coef)
+    q_intercept_int16, int_scale_int16 = symmetric_quantize_int16(intercept)
+
+    joblib.dump({
+        'q_coef': q_coef_int8,
+        'coef_scale': coef_scale_int8,
+        'q_intercept': q_intercept_int8,
+        'int_scale': int_scale_int8,
+    }, "src/quant_params_int8.joblib")
+
+    joblib.dump({
+        'q_coef': q_coef_int16,
+        'coef_scale': coef_scale_int16,
+        'q_intercept': q_intercept_int16,
+        'int_scale': int_scale_int16,
+    }, "src/quant_params_int16.joblib")
+
+    # Dequantize
+    dq_coef_int8 = symmetric_dequantize_int8(q_coef_int8, coef_scale_int8)
+    dq_intercept_int8 = symmetric_dequantize_int8(q_intercept_int8, int_scale_int8).item()
+
+    dq_coef_int16 = symmetric_dequantize_int16(q_coef_int16, coef_scale_int16)
+    dq_intercept_int16 = symmetric_dequantize_int16(q_intercept_int16, int_scale_int16).item()
+
+    # Debug
+    # print("\nSample coefficient comparison:")
+    # print(f"Original coef[:5]:    {coef[:5]}")
+    # print(f"Quantized 8 bit coef[:5]:   {q_coef_int8[:5]}")
+    # print(f"Dequantized 8 bit coef[:5]: {dq_coef_int8[:5]}\n")
+    # print(f"Quantized 16 bit coef[:5]:   {q_coef_int16[:5]}")
+    # print(f"Dequantized 16 bit coef[:5]: {dq_coef_int16[:5]}\n")
+
+    # Evaluate quantized model
+    preds_int8 = np.dot(X_test, dq_coef_int8) + dq_intercept_int8
+    r2_int8 = r2_score(y_test, preds_int8)
+    mse_int8 = mean_squared_error(y_test, preds_int8)
+
+    preds_int16 = np.dot(X_test, dq_coef_int16) + dq_intercept_int16
+    r2_int16 = r2_score(y_test, preds_int16)
+    mse_int16 = mean_squared_error(y_test, preds_int16)
+
     print(f"\n" + "="*50)
     print(f"RESULTS:")
-    print(f"Original Model — R2: {orig_r2:.6f}, MSE: {orig_mse:.6f}")
-    print(f"Quantized Model — R2: {r2:.4f}, MSE: {mse:.4f}")
+    print(f"Original Model R2: {orig_r2:.4f}, MSE: {orig_mse:.4f}")
+    print(f"Quantized Model 8 bit R2: {r2_int8:.4f}, MSE: {mse_int8:.4f}")
+    print(f"Quantized Model 16 bit R2: {r2_int16:.4f}, MSE: {mse_int16:.4f}")
     print(f"\n" + "="*50)
 
 if __name__ == "__main__":

@@ -18,21 +18,29 @@ jobs:
   train-and-quantize:
     needs: test-suite
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - run: pip install -r requirements.txt
-      - run: python src/train.py
-      - run: python src/quantize.py
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Train original model
+        run: python src/train.py
+
+      - name: Run quantization (symmetric int16)
+        run: python src/quantize.py
+    
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: model
           path: |
             src/trained_model.joblib
-            src/quant_params.joblib
+            src/quant_params_int16.joblib
 
   build-and-test-container:
     needs: train-and-quantize
